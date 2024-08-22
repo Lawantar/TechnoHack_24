@@ -22,7 +22,10 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "SX1278.h"
+#include "bmp280.h"
+#include "mpu9250.h"
 #include "stdio.h"
+#include "string.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,9 +44,36 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim1;
+
+UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2;
+
 /* USER CODE BEGIN PV */
+BMP280_HandleTypedef bmp280;
+
+MPU9250_t mpu;
+
+SX1278_hw_t SX1278_hw;
+SX1278_t SX1278;
+
+bool bmp_status = false;
+
+int32_t ret = 0;
+int32_t message_length = 0;
+uint16_t crc = 0;
+
+float mpuData[6];
+float meteo[4];
+float gps[3];
+
+char tx_string[256] = {0,};
+
+float temp, pres, hum = 0;
 
 /* USER CODE END PV */
 
@@ -51,19 +81,63 @@ SPI_HandleTypeDef hspi1;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_USART1_UART_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+void get_mpu_data(float* mpuData);
+void make_tx_string(void);
+uint16_t Crc16(uint8_t *pcBlock, uint16_t len);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-SX1278_hw_t SX1278_hw;
-SX1278_t SX1278;
+uint16_t Crc16(uint8_t *pcBlock, uint16_t len)
+{
+	uint16_t crc = 0xFFFF;
+    unsigned char i;
 
-int ret = 0;
-int message_length = 0;
+    while (len--)
+    {
+        crc ^= *pcBlock++ << 8;
 
-char buffer[512];
+        for (i = 0; i < 8; i++)
+            crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+    }
+    return crc;
+}
+
+void get_mpu_data(float* mpuData){
+	mpuData[0] = getAccX(&mpu);
+	mpuData[1] = getAccY(&mpu);
+	mpuData[2] = getAccZ(&mpu);
+	mpuData[3] = getGyroX(&mpu);
+	mpuData[4] = getGyroY(&mpu);
+	mpuData[5] = getGyroZ(&mpu);
+}
+
+void make_tx_string(void){
+	tx_string[0] = 0xFF;
+	tx_string[1] = 0xFF;
+	tx_string[2] = 0x01;
+	tx_string[3] = 0x00;
+	memcpy(tx_string + 4, mpuData, sizeof(mpuData));
+	memcpy(tx_string + (4 + sizeof(mpuData)), meteo, sizeof(meteo));
+	memcpy(tx_string + (4 + sizeof(mpuData) + sizeof(meteo)), gps, sizeof(gps));
+	crc = Crc16((uint8_t*)tx_string, 4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps));
+	memcpy(tx_string + (4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps)), &crc, sizeof(crc));
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+	if (htim->Instance == TIM1) {
+		uint32_t cl = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+		uint32_t ch = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
+		uint32_t duty = (float) 100 * ch / cl;
+		meteo[3] = 2000 * (((float)duty*10)-2) / 1002;
+	}
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -96,7 +170,24 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_SPI1_Init();
+  MX_I2C1_Init();
+  MX_USART1_UART_Init();
+  MX_TIM1_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+
+  HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_1);
+  HAL_TIM_IC_Start(&htim1, TIM_CHANNEL_2);
+
+  bmp280_init_default_params(&bmp280.params);
+  bmp280.addr = BMP280_I2C_ADDRESS_0;
+  bmp280.i2c = &hi2c1;
+  bmp_status = bmp280_init(&bmp280, &bmp280.params); // TODO handle error
+
+  MPU9250SetDefault(&mpu);
+  HAL_Delay(2000);
+  setupMPU(&mpu, MPU9250_ADDRESS); // TODO handle error
+
   SX1278_hw.dio0.port = LORA_DI0_GPIO_Port;
   SX1278_hw.dio0.pin = LORA_DI0_Pin;
   SX1278_hw.nss.port = LORA_NSS_GPIO_Port;
@@ -109,22 +200,36 @@ int main(void)
 
   SX1278_init(&SX1278, 434000000, SX1278_POWER_20DBM, SX1278_LORA_SF_7, SX1278_LORA_BW_125KHZ, SX1278_LORA_CR_4_5, SX1278_LORA_CRC_EN, 15);
   ret = SX1278_LoRaEntryTx(&SX1278, 16, 2000);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  message_length = sprintf(buffer, "Hello, world!");
-	  if (message_length >= 0) {
-	  	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
-	  	ret = SX1278_transmit(&SX1278, (uint8_t*) buffer, message_length, 2000); //TODO Handle error
+	  if(bmp_status == true) {
+		  bmp280_read_float(&bmp280, meteo);
 	  }
-	  HAL_Delay(250);
-	  if(ret != 0) {
+
+	  if (updateMPU(&mpu)) {
+		  get_mpu_data(mpuData);
+	  }
+
+	  // TODO gps data
+
+	  make_tx_string();
+
+	  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+	  ret = SX1278_transmit(&SX1278, (uint8_t*) tx_string, 58, 2000); // TODO Handle error
+	  HAL_Delay(50);
+	  if(ret > 0) {
 	  	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 	  }
-	  HAL_Delay(250);
+	  HAL_Delay(50);
+
+	  //HAL_UART_Transmit(&huart1, (uint8_t*)tx_string, 58, 2000);
+	  //HAL_Delay(1000);
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -169,6 +274,40 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
   * @brief SPI1 Initialization Function
   * @param None
   * @retval None
@@ -207,6 +346,147 @@ static void MX_SPI1_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_SlaveConfigTypeDef sSlaveConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sSlaveConfig.SlaveMode = TIM_SLAVEMODE_RESET;
+  sSlaveConfig.InputTrigger = TIM_TS_TI1FP1;
+  sSlaveConfig.TriggerPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sSlaveConfig.TriggerPrescaler = TIM_ICPSC_DIV1;
+  sSlaveConfig.TriggerFilter = 0;
+  if (HAL_TIM_SlaveConfigSynchro(&htim1, &sSlaveConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
+  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 9600;
+  huart1.Init.WordLength = UART_WORDLENGTH_9B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_EVEN;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 9600;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -219,6 +499,7 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
