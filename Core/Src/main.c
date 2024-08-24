@@ -36,6 +36,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define _DEBUG
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -61,17 +63,21 @@ MPU9250_t mpu;
 SX1278_hw_t SX1278_hw;
 SX1278_t SX1278;
 
-bool bmp_status = false;
+uint8_t bmp_status = 0;
 
-int32_t ret = 0;
+uint8_t ERROR_REG = 0x00;
+
+int32_t lora_status = 0;
 int32_t message_length = 0;
 uint16_t crc = 0;
+
+uint32_t start_cycle_time = 0;
 
 float mpuData[6];
 float meteo[4];
 float gps[3];
 
-char tx_string[256] = {0,};
+char tx_packet[128] = {0,};
 
 float temp, pres, hum = 0;
 
@@ -86,29 +92,31 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-void get_mpu_data(float* mpuData);
-void make_tx_string(void);
+void Get_MPU_Data(void);
+void Make_Tx_Packet(void);
+void Transmit_Packet(void);
+void Get_BME_Data(void);
 uint16_t Crc16(uint8_t *pcBlock, uint16_t len);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint16_t Crc16(uint8_t *pcBlock, uint16_t len)
-{
+uint16_t Crc16(uint8_t *pcBlock, uint16_t len) {
 	uint16_t crc = 0xFFFF;
     unsigned char i;
-
-    while (len--)
-    {
+    while (len--) {
         crc ^= *pcBlock++ << 8;
-
-        for (i = 0; i < 8; i++)
+        for (i = 0; i < 8; i++) {
             crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+        }
     }
     return crc;
 }
 
-void get_mpu_data(float* mpuData){
+void Get_MPU_Data () {
+	if (updateMPU(&mpu) == 0) {
+		ERROR_REG = ERROR_REG | MPU_READ_ERROR;
+	}
 	mpuData[0] = getAccX(&mpu);
 	mpuData[1] = getAccY(&mpu);
 	mpuData[2] = getAccZ(&mpu);
@@ -117,16 +125,32 @@ void get_mpu_data(float* mpuData){
 	mpuData[5] = getGyroZ(&mpu);
 }
 
-void make_tx_string(void){
-	tx_string[0] = 0xFF;
-	tx_string[1] = 0xFF;
-	tx_string[2] = 0x01;
-	tx_string[3] = 0x00;
-	memcpy(tx_string + 4, mpuData, sizeof(mpuData));
-	memcpy(tx_string + (4 + sizeof(mpuData)), meteo, sizeof(meteo));
-	memcpy(tx_string + (4 + sizeof(mpuData) + sizeof(meteo)), gps, sizeof(gps));
-	crc = Crc16((uint8_t*)tx_string, 4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps));
-	memcpy(tx_string + (4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps)), &crc, sizeof(crc));
+void Make_Tx_Packet(void) {
+	tx_packet[0] = 0xFF; // PREAMB
+	tx_packet[1] = 0xFF; // PREAMB
+	tx_packet[2] = 0x01; // ID
+	tx_packet[3] = 0x00; // ID
+	memcpy(tx_packet + 4, mpuData, sizeof(mpuData)); // MPU DATA 24 BYTES
+	memcpy(tx_packet + (4 + sizeof(mpuData)), meteo, sizeof(meteo)); // METEO DATA 16 BYTES
+	memcpy(tx_packet + (4 + sizeof(mpuData) + sizeof(meteo)), gps, sizeof(gps)); // GPS DATA 12 BYTES
+	memcpy(tx_packet + (4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps)), &ERROR_REG, sizeof(ERROR_REG)); // ERROR CODES 1 BYTE
+	crc = Crc16((uint8_t*)tx_packet, 4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps) + sizeof(ERROR_REG));
+	memcpy(tx_packet + (4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps) + sizeof(ERROR_REG)), &crc, sizeof(crc)); // CRC 2 BYTES
+}
+
+void Transmit_Packet(void) {
+	lora_status = SX1278_transmit(&SX1278, (uint8_t*) tx_packet, PACKET_LEN, 2000);
+	if(lora_status <= 0) {
+		ERROR_REG = ERROR_REG | PACKET_TRANSMIT_ERROR;
+	}
+}
+
+void Get_BME_Data(void) {
+	if(bmp_status == 0) {
+		if(bmp280_read_float(&bmp280, meteo) != 0) {
+			ERROR_REG = ERROR_REG | BMP_READ_ERROR;
+		}
+	}
 }
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
@@ -134,7 +158,10 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 		uint32_t cl = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
 		uint32_t ch = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
 		uint32_t duty = (float) 100 * ch / cl;
-		meteo[3] = 2000 * (((float)duty*10)-2) / 1002;
+		meteo[3] = 2000 * (((float)duty*10)+2) / 1002;
+		if(meteo[3] >= 5000.0){
+			ERROR_REG = ERROR_REG | CO2_DATA_ERROR;
+		}
 	}
 }
 
@@ -182,11 +209,15 @@ int main(void)
   bmp280_init_default_params(&bmp280.params);
   bmp280.addr = BMP280_I2C_ADDRESS_0;
   bmp280.i2c = &hi2c1;
-  bmp_status = bmp280_init(&bmp280, &bmp280.params); // TODO handle error
+  bmp_status = bmp280_init(&bmp280, &bmp280.params);
+  if (bmp_status != 0) {
+	 ERROR_REG = ERROR_REG | BMP_INIT_ERROR;
+  }
 
   MPU9250SetDefault(&mpu);
-  HAL_Delay(2000);
-  setupMPU(&mpu, MPU9250_ADDRESS); // TODO handle error
+  if (setupMPU(&mpu, MPU9250_ADDRESS) != 1) {
+	  ERROR_REG = ERROR_REG | MPU_INIT_ERROR;
+  }
 
   SX1278_hw.dio0.port = LORA_DI0_GPIO_Port;
   SX1278_hw.dio0.pin = LORA_DI0_Pin;
@@ -195,40 +226,33 @@ int main(void)
   SX1278_hw.reset.port = LORA_RST_GPIO_Port;
   SX1278_hw.reset.pin = LORA_RST_Pin;
   SX1278_hw.spi = &hspi1;
-
   SX1278.hw = &SX1278_hw;
+  SX1278_init(&SX1278, 434000000, SX1278_POWER_20DBM, SX1278_LORA_SF_7, SX1278_LORA_BW_125KHZ, SX1278_LORA_CR_4_5, SX1278_LORA_CRC_EN, PACKET_LEN);
+  lora_status = SX1278_LoRaEntryTx(&SX1278, PACKET_LEN, 2000);
 
-  SX1278_init(&SX1278, 434000000, SX1278_POWER_20DBM, SX1278_LORA_SF_7, SX1278_LORA_BW_125KHZ, SX1278_LORA_CR_4_5, SX1278_LORA_CRC_EN, 15);
-  ret = SX1278_LoRaEntryTx(&SX1278, 16, 2000);
+  start_cycle_time = HAL_GetTick();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-	  if(bmp_status == true) {
-		  bmp280_read_float(&bmp280, meteo);
-	  }
+  while (1) {
 
-	  if (updateMPU(&mpu)) {
-		  get_mpu_data(mpuData);
-	  }
+	  Get_BME_Data();
+	  Get_MPU_Data();
 
 	  // TODO gps data
 
-	  make_tx_string();
+	  if(HAL_GetTick() - start_cycle_time >= CYCLE_TIME) {
+		  Make_Tx_Packet();
+		  Transmit_Packet();
 
-	  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
-	  ret = SX1278_transmit(&SX1278, (uint8_t*) tx_string, 58, 2000); // TODO Handle error
-	  HAL_Delay(50);
-	  if(ret > 0) {
-	  	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+		  #ifdef _DEBUG
+	  	  	  HAL_UART_Transmit(&huart1, (uint8_t*)tx_packet, PACKET_LEN, 1000);
+	  	  #endif
+
+		  start_cycle_time = HAL_GetTick();
 	  }
-	  HAL_Delay(50);
-
-	  //HAL_UART_Transmit(&huart1, (uint8_t*)tx_string, 58, 2000);
-	  //HAL_Delay(1000);
 
     /* USER CODE END WHILE */
 
@@ -556,6 +580,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
+  ERROR_REG = SYSTEM_ERROR;
   while (1)
   {
   }

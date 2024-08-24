@@ -137,26 +137,26 @@ static int write_register8(BMP280_HandleTypedef *dev, uint8_t addr, uint8_t valu
 		return true;
 }
 
-bool bmp280_init(BMP280_HandleTypedef *dev, bmp280_params_t *params) {
+uint8_t bmp280_init(BMP280_HandleTypedef *dev, bmp280_params_t *params) {
 
 	if (dev->addr != BMP280_I2C_ADDRESS_0
 			&& dev->addr != BMP280_I2C_ADDRESS_1) {
 
-		return false;
+		return 1;
 	}
 
 	if (read_data(dev, BMP280_REG_ID, &dev->id, 1)) {
-		return false;
+		return 1;
 	}
 
 	if (dev->id != BMP280_CHIP_ID && dev->id != BME280_CHIP_ID) {
 
-		return false;
+		return 1;
 	}
 
 	// Soft reset.
 	if (write_register8(dev, BMP280_REG_RESET, BMP280_RESET_VALUE)) {
-		return false;
+		return 1;
 	}
 
 	// Wait until finished copying over the NVP data.
@@ -168,16 +168,16 @@ bool bmp280_init(BMP280_HandleTypedef *dev, bmp280_params_t *params) {
 	}
 
 	if (!read_calibration_data(dev)) {
-		return false;
+		return 1;
 	}
 
 	if (dev->id == BME280_CHIP_ID && !read_hum_calibration_data(dev)) {
-		return false;
+		return 1;
 	}
 
 	uint8_t config = (params->standby << 5) | (params->filter << 2);
 	if (write_register8(dev, BMP280_REG_CONFIG, config)) {
-		return false;
+		return 1;
 	}
 
 	if (params->mode == BMP280_MODE_FORCED) {
@@ -191,15 +191,15 @@ bool bmp280_init(BMP280_HandleTypedef *dev, bmp280_params_t *params) {
 		// Write crtl hum reg first, only active after write to BMP280_REG_CTRL.
 		uint8_t ctrl_hum = params->oversampling_humidity;
 		if (write_register8(dev, BMP280_REG_CTRL_HUM, ctrl_hum)) {
-			return false;
+			return 1;
 		}
 	}
 
 	if (write_register8(dev, BMP280_REG_CTRL, ctrl)) {
-		return false;
+		return 1;
 	}
 
-	return true;
+	return 0;
 }
 
 bool bmp280_force_measurement(BMP280_HandleTypedef *dev) {
@@ -331,7 +331,7 @@ bool bmp280_read_fixed(BMP280_HandleTypedef *dev, int32_t *temperature, uint32_t
 	return true;
 }
 
-bool bmp280_read_float(BMP280_HandleTypedef *dev, float *data) {
+uint8_t bmp280_read_float(BMP280_HandleTypedef *dev, float *data) {
 	int32_t fixed_temperature;
 	uint32_t fixed_pressure;
 	uint32_t fixed_humidity;
@@ -339,8 +339,8 @@ bool bmp280_read_float(BMP280_HandleTypedef *dev, float *data) {
 		data[0] = (float) fixed_temperature / 100;
 		data[1] = (float) fixed_pressure / 256;
 		data[2] = (float) fixed_humidity / 1024;
-		return true;
+		return 0;
 	}
 
-	return false;
+	return 1;
 }

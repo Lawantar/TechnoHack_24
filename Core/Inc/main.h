@@ -65,7 +65,17 @@ void Error_Handler(void);
 #define LORA_RST_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+#define PACKET_TRANSMIT_ERROR 0x01
+#define BMP_INIT_ERROR 0x02
+#define BMP_READ_ERROR 0x04
+#define MPU_INIT_ERROR 0x08
+#define GPS_NO_DATA 0x10
+#define CO2_DATA_ERROR 0x20
+#define MPU_READ_ERROR 0x40
+#define SYSTEM_ERROR 0xFF
 
+#define PACKET_LEN 59
+#define CYCLE_TIME 1000
 
 /* USER CODE END Private defines */
 

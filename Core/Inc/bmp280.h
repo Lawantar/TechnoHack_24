@@ -136,7 +136,7 @@ void bmp280_init_default_params(bmp280_params_t *params);
  *
  * This may be called again to soft reset the device and initialize it again.
  */
-bool bmp280_init(BMP280_HandleTypedef *dev, bmp280_params_t *params);
+uint8_t bmp280_init(BMP280_HandleTypedef *dev, bmp280_params_t *params);
 
 /**
  * Start measurement in forced mode.
@@ -171,7 +171,7 @@ bool bmp280_read_fixed(BMP280_HandleTypedef *dev, int32_t *temperature,
  *  Humidity is optional and only read for the BME280, in percent relative
  *  humidity.
  */
-bool bmp280_read_float(BMP280_HandleTypedef *dev, float *data);
+uint8_t bmp280_read_float(BMP280_HandleTypedef *dev, float *data);
 
 
 #endif  // __BMP280_H__
