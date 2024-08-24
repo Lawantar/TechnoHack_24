@@ -24,8 +24,10 @@
 #include "SX1278.h"
 #include "bmp280.h"
 #include "mpu9250.h"
+#include "parseNMEA.h"
 #include "stdio.h"
 #include "string.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,23 +65,26 @@ MPU9250_t mpu;
 SX1278_hw_t SX1278_hw;
 SX1278_t SX1278;
 
+GPS gps;
+
 uint8_t bmp_status = 0;
 
 uint8_t ERROR_REG = 0x00;
 
 int32_t lora_status = 0;
-int32_t message_length = 0;
 uint16_t crc = 0;
 
 uint32_t start_cycle_time = 0;
 
 float mpuData[6];
 float meteo[4];
-float gps[3];
 
-char tx_packet[128] = {0,};
+char tx_packet[128] = {0, };
+char gps_input[1024] = {0, };
 
-float temp, pres, hum = 0;
+float temp = 0;
+float pres = 0;
+float hum = 0;
 
 /* USER CODE END PV */
 
@@ -96,6 +101,7 @@ void Get_MPU_Data(void);
 void Make_Tx_Packet(void);
 void Transmit_Packet(void);
 void Get_BME_Data(void);
+void Get_GPS_Data(void);
 uint16_t Crc16(uint8_t *pcBlock, uint16_t len);
 /* USER CODE END PFP */
 
@@ -132,7 +138,7 @@ void Make_Tx_Packet(void) {
 	tx_packet[3] = 0x00; // ID
 	memcpy(tx_packet + 4, mpuData, sizeof(mpuData)); // MPU DATA 24 BYTES
 	memcpy(tx_packet + (4 + sizeof(mpuData)), meteo, sizeof(meteo)); // METEO DATA 16 BYTES
-	memcpy(tx_packet + (4 + sizeof(mpuData) + sizeof(meteo)), gps, sizeof(gps)); // GPS DATA 12 BYTES
+	memcpy(tx_packet + (4 + sizeof(mpuData) + sizeof(meteo)), &gps, sizeof(gps)); // GPS DATA 12 BYTES
 	memcpy(tx_packet + (4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps)), &ERROR_REG, sizeof(ERROR_REG)); // ERROR CODES 1 BYTE
 	crc = Crc16((uint8_t*)tx_packet, 4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps) + sizeof(ERROR_REG));
 	memcpy(tx_packet + (4 + sizeof(mpuData) + sizeof(meteo) + sizeof(gps) + sizeof(ERROR_REG)), &crc, sizeof(crc)); // CRC 2 BYTES
@@ -153,12 +159,19 @@ void Get_BME_Data(void) {
 	}
 }
 
+void Get_GPS_Data()	{
+	HAL_UART_Receive(&huart2, (uint8_t*)gps_input, 1024, 2000);
+	if (parser(gps_input, 1024, &gps) != 'A') {
+		ERROR_REG = ERROR_REG | GPS_NO_DATA;
+	}
+}
+
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 	if (htim->Instance == TIM1) {
 		uint32_t cl = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
 		uint32_t ch = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
 		uint32_t duty = (float) 100 * ch / cl;
-		meteo[3] = 2000 * (((float)duty*10)+2) / 1002;
+		meteo[3] = 2000 * (((float)duty * 10) + 2) / 1002;
 		if(meteo[3] >= 5000.0){
 			ERROR_REG = ERROR_REG | CO2_DATA_ERROR;
 		}
@@ -240,8 +253,7 @@ int main(void)
 
 	  Get_BME_Data();
 	  Get_MPU_Data();
-
-	  // TODO gps data
+	  Get_GPS_Data();
 
 	  if(HAL_GetTick() - start_cycle_time >= CYCLE_TIME) {
 		  Make_Tx_Packet();
@@ -252,6 +264,7 @@ int main(void)
 	  	  #endif
 
 		  start_cycle_time = HAL_GetTick();
+
 	  }
 
     /* USER CODE END WHILE */

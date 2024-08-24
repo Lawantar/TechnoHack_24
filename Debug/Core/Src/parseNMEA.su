@@ -1,0 +1,2 @@
+../Core/Src/parseNMEA.c:7:10:converter_time	64	static
+../Core/Src/parseNMEA.c:43:9:parser	248	static

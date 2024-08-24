@@ -65,6 +65,7 @@ void Error_Handler(void);
 #define LORA_RST_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+
 #define PACKET_TRANSMIT_ERROR 0x01
 #define BMP_INIT_ERROR 0x02
 #define BMP_READ_ERROR 0x04
@@ -76,6 +77,12 @@ void Error_Handler(void);
 
 #define PACKET_LEN 59
 #define CYCLE_TIME 1000
+
+typedef struct {
+	float lat;
+	float lon;
+	uint32_t secs;
+} GPS;
 
 /* USER CODE END Private defines */
 
