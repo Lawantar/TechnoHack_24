@@ -62,11 +62,12 @@ uint8_t parser(char *inpString, uint16_t len, GPS* gps) {
         return 2;
     }
 	
+	if (start_index > 1022) {
+	        return 3;
+	}
+
 	// Выделение строки после "GNRMC,"
     char for_tokens[128];
-    if (for_tokens == NULL) {
-        return 3;
-    }
 	
 	int i = 0;
     while (inpString[start_index] != '\n' && inpString[start_index] != '\r') {
@@ -77,20 +78,25 @@ uint8_t parser(char *inpString, uint16_t len, GPS* gps) {
     // Парсинг строки для извлечения данных
     char timeStamp[11] = {0}, status[2] = {0}, latitude[12] = {0}, ns[2] = {0};
     char longitude[13] = {0}, ew[2] = {0}, date[7] = {0};
-	char ts = 0, lt = 0, lg = 0, dt = 0;
+	unsigned char ts = 0, lt = 0, lg = 0, dt = 0;
 	
 	
 	i = 0;
 	int count = 0;
     
-    while((c = for_tokens[i]) != '\n' && c != '\r'){
+    while(((c = for_tokens[i]) != '\n') && (c != '\r') && (i <= 126)) {
 
 		if (c == ','){
 			count++;
 			i++;
 			continue;
 		}
-		
+		if (count > 9){
+			break;
+		}
+		if (count == 0){
+			break;
+		}
 		if (count == 1){
 			while(c != ',' && c != '\n' && c != '\r'){
 				timeStamp[ts++] = c;
@@ -118,7 +124,7 @@ uint8_t parser(char *inpString, uint16_t len, GPS* gps) {
 		else if (count == 5){
 			while(c != ',' && c != '\n' && c != '\r'){
 				longitude[lg++] = c;
-				c = for_tokens[++i];				
+				c = for_tokens[++i];
 			}
 			longitude[lg] = '\0';
 		}
@@ -139,11 +145,9 @@ uint8_t parser(char *inpString, uint16_t len, GPS* gps) {
 				c = for_tokens[++i];
 			}
 			continue;
+		} else {
+			continue;
 		}
-		else if (count > 9){
-			break;
-		}
-		
 	}
 	
 	gps->lat = strtof(latitude, NULL); // Готовые данные

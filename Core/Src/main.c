@@ -38,7 +38,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define _DEBUG
+//#define _DEBUG
 
 /* USER CODE END PD */
 
@@ -160,7 +160,7 @@ void Get_BME_Data(void) {
 }
 
 void Get_GPS_Data()	{
-	HAL_UART_Receive(&huart2, (uint8_t*)gps_input, 1024, 2000);
+	HAL_UART_Receive(&huart2, (uint8_t*)gps_input, 1024, 1000);
 	if (parser(gps_input, 1024, &gps) != 'A') {
 		ERROR_REG = ERROR_REG | GPS_NO_DATA;
 	}
@@ -170,11 +170,12 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 	if (htim->Instance == TIM1) {
 		uint32_t cl = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
 		uint32_t ch = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
-		uint32_t duty = (float) 100 * ch / cl;
-		meteo[3] = 2000 * (((float)duty * 10) + 2) / 1002;
-		if(meteo[3] >= 5000.0){
+		float duty = 100.0 * ch / cl;
+		if (duty > 100.0) {
+			duty = 100.0;
 			ERROR_REG = ERROR_REG | CO2_DATA_ERROR;
 		}
+		meteo[3] = 2000 * duty / 100;
 	}
 }
 
@@ -260,7 +261,7 @@ int main(void)
 		  Transmit_Packet();
 
 		  #ifdef _DEBUG
-	  	  	  HAL_UART_Transmit(&huart1, (uint8_t*)tx_packet, PACKET_LEN, 1000);
+	  	  	  HAL_UART_Transmit(&huart1, (uint8_t*)gps_input, 1024, 1000);
 	  	  #endif
 
 		  start_cycle_time = HAL_GetTick();
@@ -535,26 +536,15 @@ static void MX_GPIO_Init(void)
 /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LORA_NSS_GPIO_Port, LORA_NSS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LORA_RST_GPIO_Port, LORA_RST_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin : PC13 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LORA_DI0_Pin */
   GPIO_InitStruct.Pin = LORA_DI0_Pin;
